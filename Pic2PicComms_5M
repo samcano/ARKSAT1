@@ -1,0 +1,329 @@
+'****************************************************************                                      *
+'*  Start Date    05.01.2022                                 *
+'*  Complete Date 05.25.2022                                             *                                                  *
+'****************************************************************
+'This code is for testing out the features needed for setting up
+'PIC-to-PIC (PtP) serial network.  This Master(M) PIC code(PICtoPIC_3M) requires
+'the Slave(S) PIC code (PICtoPIC_3S) to be paired up with it.  This code provides
+'nominal timing, link status tracking, and two-way link from Master to Slave and return.
+'This code also uses the ARKSAT-1 IDP protocol to determine data lengths.
+'
+'(NC) Not Critical Code for general PtP
+'
+'Ser2_1_Status is used to indicate PtP communication status.
+'Initial/reset state-->     M's and S's        Ser2_1_Status=%00000000
+'Step 0:PtP link called     M's and S's        Ser2_1_Status=%00000001
+'Step 1:M set M.DO                          M->Ser2_1_Status=%00000011  
+'       S received M.DO                     S->Ser2_1_Status=%00000011
+'Step 2:S set S.DO                          S->Ser2_1_Status=%00000111 
+'       M received S.DO                     M->Ser2_1_Status=%00000111    
+'Step 3:M sent data (M->S)                  M->Ser2_1_Status=%00001111  
+'       S received data                     S->Ser2_1_Status=%00001111
+'Step 4:S clear S.DO                        S->Ser2_1_Status=%00011111
+'       M verified cleared S.DO             M->Ser2_1_Status=%00011111
+'Step 5:M clears M.DO                       S->Ser2_1_Status=%00111111
+'       S verified cleared M.DO             M->Ser2_1_Status=%00111111
+'Step 6:S sent data  (S->M)                 S->Ser2_1_Status=%01111111
+'       M received data                     M->Ser2_1_Status=%01111111
+'
+'Any faults during PtP link,                Ser2_1_Status.7=1
+       
+'''''DEFINES
+''''Oscillator
+DEFINE OSC 16
+''''DEBUG
+DEFINE DEBUG_BIT 4          'PortB.4-Serial Debug-Trasnmit
+DEFINE DEBUGIN_BIT 5        'PortB.5-Serial Debug-Receive
+'DEFINE DEBUG_PACING 10     'Not really needed unless timing there's timing issues
+DEFINE DEBUG_BAUD 19200     '
+DEFINE DEBUG_MODE 1         'Inverted, for RS232 connection
+DEFINE DEBUGIN_MODE 1       'Inverted, for RS232 connection
+DEfine DEBUG_REG PORTB      '
+DEfine DEBUGIN_REG PORTB    '
+''''Serial2
+DEFINE SER2_BITS 8          'Serial2 is based on 8 bits of data (standard UART)
+
+
+'''''REGISTERS
+''''For General Use
+TRISB.6=0       'PORTB.6 for LED pin out
+
+''''For Serial needs (Debug and PtP)
+'''Turn off analog channels for using digital
+ANSELB=0        'PortB used for debugging
+ANSELD.0=0      'PortD.0-4 used for PtP links
+ANSELD.1=0
+ANSELD.2=0
+ANSELD.3=0 
+'''Set digital channel directions
+TRISB.4=0       'PortB.4 for debug out serial          
+TRISD.0=0       'PortD.0 for PtP link serial out
+TRISD.1=1       'PortD.1 for PtP link serial in
+TRISD.2=0       'PortD.2 for PtP link digital trigger out
+TRISD.3=1       'PortD.2 for PtP link digital trigger in 
+
+'''''VARIABLES
+'''Indices
+i                var byte
+index            var byte
+''''PtP Link Variables
+'''PtP Indices
+Ser2_i           var word   'PtP related index variables
+Ser2_j           var word   'PtP related index variables
+'''PtP Serial2 Variables
+Ser2_Mode_1      var word   'PtP Serial2 Mode Variable
+Ser2_Status_1    var byte   'PtP Link Status Variable
+Ser2_DI_Sum_1    var byte   'PtP Input trigger sum
+'''IDP Protocol
+IDP_Dummy           var byte[224]  '224 Bytes of Dummy for IDP Data TEsts
+IDP_Header_TX       var byte[16]
+IDP_Header_RX       var byte[16]
+IDP_Data_TX         var BYTE[224]  '240 Bytes for Serial Transmit Buffer
+IDP_Data_RX         var BYTE[224]  '240 Bytes for Serial Return Buffer
+IDP_DataLength_TX   var word       'Data Length nominally 224 bytes max, down to zero.
+IDP_FileNumber_TX   var long       'Two's complement, no negative values in use.
+IDP_PageNumber_TX   var word       'Page Number
+
+'''''Alias
+''''Indicator Aliases
+LED           var PORTB.6   'Run Indicator
+''''PtP Serial 2 Aliases
+Ser2_TX_1     var PORTD.0   'PtP Transmit
+Ser2_RX_1     var PORTD.1   'PtP Receive
+Ser2_DO_1     var PORTD.2   'PtP Trigger Output
+Ser2_DI_1     var PORTD.3   'PtP Trigger Input
+
+'''''Initialization
+LED=1                   'Indicates PIC is on
+Gosub Ser2_Initiate     'Readies Ser2 input/output pins
+'''Serial2 Setups, must be in the order shown
+Ser2_Mode_1=32          'Set Baud Rate (test 32->19200bps;operate 0->50000bps)
+Ser2_Mode_1.13=0        'No parity (default)
+Ser2_Mode_1.14=0        'Inverted
+Ser2_Mode_1.15=0        'Driven (default), meaning only 1 device connected
+pause 100
+'''IDP Protocol 
+''First load dummy data into "IDP_Packet_TX"
+arraywrite IDP_Dummy,["The ARKSAT-2 is a 2U cubesat, 10cm x 10cm x 22.7 cm, developed at the University of Arkansas, and  manifested on a Northrop Grumman Antares (NG-17) rocket launching out of NASA Wallops Island as part of NASA's 8th Cubesat L!",0]
+''TX Initializations
+IDP_Header_TX[0]=64     'Start Sync=64, "@"
+IDP_Header_TX[1]=1      'Source ID=1, OBC
+IDP_Header_TX[2]=0      'Data Type.Mode
+IDP_Header_TX[3]=0      'Data Type.Formats
+
+IDP_DataLength_TX=224   'Data Length nominally 224 bytes (maximum, can be be variable to reduce time)
+IDP_Header_TX[4]=IDP_DataLength_TX.byte0    'Byte0 of IDP_DataLength_TX word.    
+IDP_Header_TX[5]=IDP_DataLength_TX.byte1    'Byte1 of IDP_DataLength_TX word, nominaly zero.     
+
+IDP_FileNumber_TX=0      'File Number
+IDP_Header_TX[6]=IDP_FileNumber_TX.byte0    'Byte 0 of File Number
+IDP_Header_TX[7]=IDP_FileNumber_TX.byte1    'Byte 1 of File Number
+IDP_Header_TX[8]=IDP_FileNumber_TX.byte2    'Byte 2 of File Number
+IDP_Header_TX[9]=IDP_FileNumber_TX.byte3    'Byte 3 of File Number
+
+IDP_PageNumber_TX=0      'Page Number
+IDP_Header_TX[10]=IDP_PageNumber_TX.byte0     'Byte 0 of Page Number
+IDP_Header_TX[11]=IDP_PageNumber_TX.byte1     'Byte 1 of Page Number
+
+IDP_Header_TX[12]=0      'Status Checking Byte
+IDP_Header_TX[13]=0      'Reserve Byte0
+IDP_Header_TX[14]=0      'Reserve Byte1
+IDP_Header_TX[15]=33    'End Sync=64, "!"
+test_array_ret   var BYTE[240]  '240 Bytes for Serial Return Buffer
+
+arrayread IDP_Dummy,[str IDP_DATA_TX\224]   'Move dummy values into data array
+'arrayread IDP_Header_TX,[str IDP_Header_TX\16]   'Move dummy values into data array
+                                            'For testing purpses, can also use for loops
+
+'arraywrite IDP_Header_TX,["@BCDXFGHIJKLMNOP",0]      'TEST
+IDP_Header_TX[0]=64 
+IDP_Header_TX[1]=40 
+IDP_Header_TX[2]=82                   'TEST
+IDP_Header_TX[3]=31
+IDP_Header_TX[4]=224
+IDP_Header_TX[5]=0
+IDP_Header_TX[6]=0
+IDP_Header_TX[7]=0
+IDP_Header_TX[8]=0
+IDP_Header_TX[9]=21
+IDP_Header_TX[10]=0
+IDP_Header_TX[11]=0
+IDP_Header_TX[12]=0
+IDP_Header_TX[13]=0
+IDP_Header_TX[14]=0
+IDP_Header_TX[15]=0
+pause 10 
+
+index=0
+
+Debug "reset",13,10 'Indicate debug serial started
+'Debug "Values: ",dec3 IDP_Header_TX[12]," ",dec3 IDP_Header_TX[13]," ",dec3 IDP_Header_TX[14]," ",dec3 IDP_Header_TX[15] 
+'Debug str IDP_Header_TX\16, 13,10
+
+
+'''''test code
+Main:
+LED=1                   '(NC)Status indicator light
+
+
+'IDP_Header_TX[4]=index                   'TEST
+
+Gosub Ser2_Initiate     'Initiate/Reset Ser2
+pause 100
+debugin [Wait("@")]     '(NC)Person-in-the-loop trigger
+LED=0                   '(NC)Status indicator light
+
+gosub ser2_DO_TRG       '(PtP_step1) Master initiates trigger to slave, request start communication.         
+gosub Ser2_DI_CK        '(PtP_step2) Master checks for slave trigger response.
+
+if Ser2_Status_1.1=1 then       'Slave trigger resonse check
+                                'Ser2_Status_1.1=1 means Slave Triggered                   
+    gosub Ser2_TX               '(PtP_step3) Subroutine for transmit data to slave
+    Debug "S-T;"',dec3 IDP_Header_TX[4]    'Indicate on Master debug serial that Slave Triggered  
+else                            'Ser2_Status_1.1=0 means Slave Not-triggered
+    Debug "S-nT;"   'Indicate on Master debug serial that Slave Not Triggered
+    goto Main                   'reset link back to Main
+endif
+
+'''If code continues here, that means Ser2_Status_1.1=1, Slave triggered and master transmitted data
+
+gosub Ser2_DI_unCK              '(PtP_step4) Check slave trigger pin after master transmitted data to indicate slave acknowledged
+gosub Ser2_DO_unTRG             '(PtP_step5) Master clears trigger, indicating ready to receive returns
+
+if Ser2_Status_1.4=1 then               '
+    pause 10
+    gosub Ser2_RX               '(PtP_step6) Master receives returns from slave
+    'Debug "S-R",     13, 10
+   ' Debug "S-R: ", dec3 index," ",IDP_Header_RX[0]," ",IDP_Header_RX[5]," ",IDP_Header_RX[15],     13, 10
+    Debug "S-R: ", 13,10', " ", dec test_array_ret[0], " ", dec test_array_ret[6]," ", dec test_array_ret[9], " ", dec test_array_ret[10], " ", dec test_array_ret[11]," ", dec test_array_ret[16], " ", dec test_array_ret[239], 13, 10
+    Ser2_Status_1.6=1           '(PtP_step6) Completed PtP Link 
+    gosub printRoutine
+else
+    Debug "S-nR", 13, 10
+    'Debug "test= ", BIN8 Ser2_Status_1, HEX2 test_array[0], HEX2 test_array[1], str test_array\240, 13,10
+endif
+
+Ser2_1_Ends:
+
+if index<=(223) Then           'TEST
+   index=index+1           '(NC)Index number to demonstrate that the returned data is updated
+else
+   index=0
+endif
+
+debug "Status ", bin8 Ser2_Status_1, 13, 10
+goto Main
+
+'''''Subroutines''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''
+printRoutine:
+    for i = 0 to 239:
+        debug dec i, "-",  dec test_array_ret[i],13 ,10
+        next i
+return
+
+Ser2_Initiate:  'Initiates Serial2 to ready it for use for PICtoPIC.
+    Ser2_DO_1=0                 'DO pins set to low
+    Ser2_Status_1=0             'Link status bits reset
+    For ser2_i=0 to 15                            'each check loop takes ~0.1ms
+        IDP_Header_RX[ser2_i] = 0
+        next ser2_i
+    for ser2_i=0 to 223
+        IDP_Data_RX[ser2_i] = 0
+        next ser2_i
+        
+    For ser2_i=0 to 239                            'each check loop takes ~0.1ms
+        test_array_ret[ser2_i]=0
+        next ser2_i
+return
+
+Ser2_DO_TRG:    'Trigger Output Serial2 to initiate Master communication
+      Ser2_DO_1=1
+      Ser2_Status_1.0=1    'Flag link status pin, link process started.
+      pauseus 10 'Wait period (can tweak)
+return
+
+
+Ser2_DI_CK:     'Check Trigger Input as Initial Response from Slave
+    
+    for ser2_j=1 to 1000                              'perform 100 check loops, 10ms
+        Ser2_DI_Sum_1=0
+        For ser2_i=1 to 10                            'each check loop takes ~0.1ms
+            Ser2_DI_Sum_1=Ser2_DI_Sum_1+Ser2_DI_1
+            pauseus 1
+        next ser2_i
+    
+        if Ser2_DI_Sum_1=10 then
+            Ser2_Status_1.1=1    'Bit 1=1, DI confirmed
+            goto end_of_Ser2_DI_CK
+        else
+            Ser2_Status_1.1=0       'Bit 1=0, DI not confirmed
+        endif
+    next ser2_j
+        
+end_of_Ser2_DI_CK:
+REturn
+
+Ser2_TX:        'Transmit Data to Slave 
+        serout2 Ser2_TX_1,Ser2_Mode_1,[str IDP_Header_TX\16]
+        'pauseus 10
+        serout2 Ser2_TX_1,Ser2_Mode_1,[str IDP_Data_TX\224]
+        'if IDP_Header_TX[4]>0 then
+        'For ser2_i=0 to (IDP_Header_TX[4]-1)
+         '   debug "IN", 13, 10
+        'next Ser2_i
+        
+        'endif
+        
+        'serout2 Ser2_TX_1,Ser2_Mode_1,[IDP_Header_TX[15], 13, 10] 'Slave should ingore 13,10 (for RS232 reading)
+        Ser2_Status_1.3=1    'Flag Master Data transmitted.
+return
+
+Ser2_DI_unCK:     'Check Trigger Input as Initial Response from Slave
+    
+    for ser2_j=1 to 10000                              'perform 100 check loops, 10ms
+        Ser2_DI_Sum_1=0
+        For ser2_i=1 to 10                            'each check loop takes ~0.1ms
+            Ser2_DI_Sum_1=Ser2_DI_Sum_1+Ser2_DI_1
+            pauseus 1
+        next ser2_i
+    
+        if Ser2_DI_Sum_1=0 then
+            Ser2_Status_1.4=1    'Bit 4=1, unDI confirmed
+            goto end_of_Ser2_DI_unCK
+        else
+            Ser2_Status_1.4=0       'Bit 4=0, unDI not confirmed
+        endif
+    next ser2_j
+        
+end_of_Ser2_DI_unCK:
+REturn
+
+Ser2_DO_unTRG:
+      Ser2_DO_1=0
+      'Ser2_Status_1.4=1         'Flag link status pin
+return
+
+Ser2_RX:        'Receive Data from Slave       
+        serin2 Ser2_RX_1,Ser2_Mode_1,60,Ser2_RX_1_Timeout,[str test_array_ret\240]
+        
+        'serin2 Ser2_RX_1,Ser2_Mode_1,60,Ser2_RX_1_Timeout,[str IDP_Header_RX\16]
+        
+        'if IDP_Header_RX[4]>0 then
+        
+        'For ser2_i=0 to (IDP_Header_RX[4]-1)
+            'serin2 Ser2_RX_1,Ser2_Mode_1,60,Ser2_RX_1_Timeout,[IDP_Data_TX[ser2_i]]       
+        'next Ser2_i
+        
+        'endif
+        
+        'serin2 Ser2_RX_1,Ser2_Mode_1,60,Ser2_RX_1_Timeout,[str IDP_Data_RX\224]
+        
+        Ser2_Status_1.5=1   'Slave data received  
+        goto Ser2_RX_1_completed
+
+    Ser2_RX_1_Timeout:        
+        Ser2_Status_1.7=1   'Did not complete Receive         
+    Ser2_RX_1_completed:
+         
+return
