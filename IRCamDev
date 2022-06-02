@@ -1,0 +1,479 @@
+
+'Scratchwork
+'Sam
+
+' Configure pins for digital operation (uncomment as needed).
+' These settings are intended as simple examples.  For more detail,
+' see the appropriate device datasheet for register descriptions.
+'ANSEL =  %00000000  ' 16F88, 16F688, 16F690, 16F88x
+'ANSELH = %00000000  ' 16F690, 16F88x
+'ADCON1 = %00000111  ' 16F87x, 16F87xA, 18F452
+'ADCON1 = %00001111  ' 18F4620 
+DEFINE OSC 16
+DEfine DEBUG_REG PORTB  
+DEfine DEBUGIN_REG PORTB
+DEFINE DEBUG_BIT 4 'B4 port for serial
+DEFINE DEBUGIN_BIT 5
+DEFINE DEBUG_BAUD 19200
+DEFINE DEBUG_MODE 1
+DEFINE DEBUGIN_MODE 1
+define DEBUG_PACING 100
+DEFINE I2C_INTERNAL 1
+
+
+SCL     var PORTC.5
+SDA     var PORTC.6
+CONT con %11010000
+addr VAR BYTE
+raw_value var byte[128]
+value var byte  'dummy variable for testing
+i var byte
+j var byte
+therm_low var byte
+therm_high var byte
+pos var byte
+pix_temp var byte[64]
+
+'ANSELB.0 = 0
+'TRISB.0 = 0
+'ANSELB.4 = 0
+'TRISB.4 = 0
+'ANSELD=0
+'ANSELD=0
+'TRISD.1=0
+ANSELC.5=0       'Configure Clock line 
+ANSELC.6=0       'Configure Data line 
+
+LOW PORTD.1
+PAUSE 100
+
+HIGH PORTD.1
+PAUSE 100
+'Setting up dummy arrays to emulate IR cam data
+LED         vAR PORTD.1
+x           var byte
+temp        var long
+MoonCams    var byte[8]
+SunCams     var byte[8]
+EarthCams   var byte[8]
+CamSums     var long[8]
+CamAvgs     var long[8]
+Quadrants   var long[36]
+CamArray1   var long[64]
+CamArray2   var long[64]
+CamArray3   var long[64]
+CamArray4   var long[64]
+CamArray5   var long[64]
+CamArray6   var long[64]
+CamArray7   var long[64]
+CamArray8   var long[64]
+CamArray9   var long[64]
+
+LOW PORTD.1
+main:
+    'gosub protocolController
+     gosub pixelLoop
+     gosub getIRData
+    debugin [Wait("@")]
+    goto main 
+'subroutines------------
+getIRData:   
+    gosub reset
+    'debugin [Wait("@")]
+    'Make array of dummmy data to standin for IR Camera data
+    For x = 0 to 63
+        'Lookup x, [0,1,1,3,5,9,18,21], Temp
+        'CamArray1(x) = 5
+        CamArray2(x) = 23'x+2
+        CamArray3(x) = 8'2*x
+        CamArray4(x) = 10'x+6
+        CamArray5(x) = -10'3*x  'Cam5 has the highest values
+        CamArray6(x) = 18'x+5
+        CamArray7(x) = 20'x+3
+        CamArray8(x) = 25
+        CamArray9(x) = -30
+        'debug "X - ", dec x, " - " , dec CamArray9(x), 10
+        next x
+
+   high PORTD.1
+   pause 500
+   gosub getAvgs
+   'gosub getOneHots
+   gosub printOut
+   'gosub getQuadrants
+   pause 500 
+   LOW PORTD.1
+   RETURN
+   'goto main
+ 
+ '-----------------------
+ pixelLoop:
+    i2cread sda, SCL, CONT, $0E, [therm_low]
+    i2cread sda, SCL, CONT, $0F, [therm_high]
+    temp = (therm_high*256 + therm_low)/16
+    debug "low=", dec therm_low, 10
+    debug "high=", dec therm_high, 10
+    debug "Temp=",dec temp, 10  'Overall temp in Celcius
+
+    'Get raw data - low and high byte for each pixel  
+    addr = 128
+    for i=0 to 127
+    low led
+       i2cread sda, SCL, CONT, addr, [raw_value[i]]
+        'debug " ",dec raw_value[i]
+        addr = addr+1
+        high led
+    next i 
+    debug,10
+    
+    'Convert to temp for each pixel
+    pos = 0
+    'debugin [wait("BEG")]
+    for j=0 to 63
+        CamArray1[j]=(raw_value[pos]+raw_value[pos+1]*256)/4
+        pos = pos+2
+        debug " ", dec CamArray1[j]
+    next j
+    debug 10, 10
+return
+ 
+ 
+ 
+ '-----------------------
+ reset:
+    for x = 0 to 8
+        CamSums(x) = 0
+        CamAvgs(x) = 0
+        MoonCams(x) = 0
+        SunCams(x) = 0
+        EarthCams(x) = 0
+        next x
+
+    'for x = 0 to 8
+    '    debug "X- ", dec x, " - ", dec CamSums(x), 10
+    '    CamArray1(x) = 0
+     '   CamArray2(x) = 0
+     '   CamArray3(x) = 0
+     '   CamArray4(x) = 0
+     '   CamArray5(x) = 0
+     '   CamArray6(x) = 0
+     '   CamArray7(x) = 0
+     '   CamArray8(x) = 0
+     '   CamArray9(x) = 0
+     '   next x
+        
+return
+'-----------------------------
+getOneHots:
+    for x = 0 to 8
+        if (CamAvgs(x) < 200) then 
+            MoonCams(x) = 1
+            SunCams(x) = 0
+            EarthCams(x) = 0
+            debug "Moon - ", dec x, " - Avg: ", dec CamAvgs(x), 13, 10
+        endif
+        if (CamAvgs(x) > 447) AND (CamAvgs(x) < 600) then 
+            MoonCams(x) = 0
+            SunCams(x) = 1
+            EarthCams(x) = 0
+            debug "Sun - ", dec x, " - Avg: ", dec CamAvgs(x), 13, 10
+        endif  
+        if (CamAvgs(x) > 600) then
+            MoonCams(x) = 0
+            SunCams(x) = 0
+            EarthCams(x) = 1   
+            debug "Earth - ", dec x, " -Avg: ", dec CamAvgs(x), 13, 10
+        endif
+        next x
+
+return
+'-----------------------------
+getAvgs:
+    gosub reset
+    for x = 0 to 63
+     'debug "Before1: ", dec x, " - ", dec CamSums(8), 10
+     'Cam1 below
+     if CamArray1(x) < 0 then
+        CamArray1(x) = 2047 - (16*CamArray1(x))
+     else 
+        CamArray1(x) = 2047 + (16*CamArray1(x))
+     endif
+     'Cam 2 below
+     if CamArray2(x) < 0 then
+        CamArray2(x) = 2047 - (16*CamArray2(x))
+     else 
+        CamArray2(x) = 2047 + (16*CamArray2(x))
+     endif
+     'Cam 3 below
+     if CamArray3(x) < 0 then
+        CamArray3(x) = 2047 - (16*CamArray3(x))
+     else 
+        CamArray3(x) = 2047 + (16*CamArray3(x))
+     endif
+     'Cam 4 below
+     if CamArray4(x) < 0 then
+        CamArray4(x) = 2047 - (16*CamArray4(x))
+     else 
+        CamArray4(x) = 2047 + (16*CamArray4(x))
+     endif
+     'Cam 5 below
+     if CamArray5(x) < 0 then
+        CamArray5(x) = 2047 + (16*CamArray5(x))
+     else 
+        CamArray5(x) = 2047 + (16*CamArray5(x))
+     endif
+     'Cam 6 below
+     if CamArray6(x) < 0 then
+        CamArray6(x) = 2047 - (16*CamArray6(x))
+     else 
+        CamArray6(x) = 2047 + (16*CamArray6(x))
+     endif
+     'Cam 7 below
+     if CamArray7(x) < 0 then
+        CamArray7(x) = 2047 - (16*CamArray7(x))
+     else 
+        CamArray7(x) = 2047 + (16*CamArray7(x))
+     endif
+     'Cam 8 below
+     if CamArray8(x) < 0 then
+        CamArray8(x) = 2047 - (16*CamArray8(x))
+     else 
+        CamArray8(x) = 2047 + (16*CamArray8(x))
+     endif
+     'Cam 9 below
+     if CamArray9(x) < 0 then
+        CamArray9(x) = 2047 - (16*CamArray9(x))
+     else 
+        CamArray9(x) = 2047 + (16*CamArray9(x))
+     endif
+
+
+
+    'debug "Before2: ", dec x, " - ", dec CamSums(8), 10
+    CamSums(0)= CamArray1(x) + CamSums(0)
+    CamSums(1)= CamArray2(x) + CamSums(1)
+    CamSums(2)= CamArray3(x) + CamSums(2)
+    CamSums(3)= CamArray4(x) + CamSums(3)
+    CamSums(4)= CamArray5(x) + CamSums(4)
+    CamSums(5)= CamArray6(x) + CamSums(5)
+    CamSums(6)= CamArray7(x) + CamSums(6)
+    CamSums(7)= CamArray8(x) + CamSums(7)
+    CamSums(8)= CamArray9(x) + CamSums(8)
+    'debug "After: ", dec x, " - ", dec CamSums(8), 10, 10
+    next x
+
+    CamAvgs(0) = CamSums(0) / 64
+    CamAvgs(1) = CamSums(1) / 64
+    CamAvgs(2) = CamSums(2) / 64
+    CamAvgs(3) = CamSums(3) / 64
+    CamAvgs(4) = CamSums(4) / 64
+    CamAvgs(5) = CamSums(5) / 64
+    CamAvgs(6) = CamSums(6) / 64
+    CamAvgs(7) = CamSums(7) / 64
+    CamAvgs(8) = CamSums(8) / 64
+return
+
+'----------------
+printOut:
+    for x=0 to 63
+        debug dec CamArray1(x), " "
+        next x
+    debug "Cam Sum: "
+    for x=0 to 8
+        debug dec CamSums(x)  , " "
+        next x
+    debug 10
+
+    debug "Cam Avgs: "
+    for x=0 to 8
+        debug dec CamAvgs(x)  , " "
+        next x
+    debug 10
+    
+'    debug "Moon: "
+'    for x=0 to 8
+'        debug dec MoonCams(x) , " "
+'        next x
+'    debug 10
+'   debug "Sun: "
+'    for x=0 to 8
+'        debug dec SunCams(x), " "
+'        next x
+'    debug 10
+'    debug "Earth: " 
+'   for x=0 to 8
+'        debug dec EarthCams(x), " "
+'        next x
+'    debug 10, 10, 10
+return
+
+'-----------------
+getQuadrants:
+     for x = 0 to 35
+        Quadrants(x) = 0
+        next x 
+
+   for x = 0 to 63
+   'Quadrant I below
+    if (x>3) and (x<8) or (x>11) and (x<16) or (x>19) and (x<24) or (x>27) and (x<32)then
+        temp = Quadrants(0)
+        Quadrants(0) = temp + CamArray1(x)
+        'debug dec Quadrants(0), 10
+        
+        temp = Quadrants(4)
+        Quadrants(4) = temp + CamArray2(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(4), " - ", dec CamArray2(x), 10
+        
+        temp = Quadrants(8)
+        Quadrants(8) = temp + CamArray3(x)
+       'debug dec x, " - ", dec temp, " - ", dec Quadrants(8), " - ", dec CamArray3(x), 10
+       
+        temp = Quadrants(12)
+        Quadrants(12) = temp + CamArray4(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(12), " - ", dec CamArray4(x), 10
+        
+        temp = Quadrants(16)
+        Quadrants(16) = temp + CamArray5(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(16), " - ", dec CamArray5(x), 10
+        
+        temp = Quadrants(20)
+        Quadrants(20) = temp + CamArray6(x)                                                   
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(20), " - ", dec CamArray6(x), 10
+        
+        temp = Quadrants(24)
+        Quadrants(24) = temp + CamArray7(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(24), " - ", dec CamArray7(x), 10
+        
+        temp = Quadrants(28)
+        Quadrants(28) = temp + CamArray8(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(28), " - ", dec CamArray8(x), 10
+          
+        temp = Quadrants(32)
+        Quadrants(32) = temp + CamArray9(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(32), " - ", dec CamArray9(x), 10  
+    endif
+    
+    'Quadrant II below
+    if (x<4) or (x>7) and (x<12) or (x>15) and (x<20) or (x>23) and (x<28)then
+        temp = Quadrants(1)
+        Quadrants(1) = temp + CamArray1(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(1), " - ", dec CamArray1(x), 10
+        
+        temp = Quadrants(5)
+        Quadrants(5) = temp + CamArray2(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(5), " - ", dec CamArray2(x), 10
+        
+        temp = Quadrants(9)
+        Quadrants(9) = temp + CamArray3(x)
+       'debug dec x, " - ", dec temp, " - ", dec Quadrants(9), " - ", dec CamArray3(x), 10
+       
+        temp = Quadrants(13)
+        Quadrants(13) = temp + CamArray4(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(13), " - ", dec CamArray4(x), 10
+        
+        temp = Quadrants(17)
+        Quadrants(17) = temp + CamArray5(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(17), " - ", dec CamArray5(x), 10
+        
+        temp = Quadrants(21)
+        Quadrants(21) = temp + CamArray6(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(21), " - ", dec CamArray6(x), 10
+        
+        temp = Quadrants(25)
+        Quadrants(25) = temp + CamArray7(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(25), " - ", dec CamArray7(x), 10
+        
+        
+        temp = Quadrants(29)
+        Quadrants(29) = temp + CamArray8(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(29), " - ", dec CamArray8(x), 10 
+         
+        temp = Quadrants(33)
+        Quadrants(33) = temp + CamArray9(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(33), " - ", dec CamArray9(x), 10 
+    endif 
+    
+       'Quadrant III below
+    if (x>31) and (x<36) or (x>39) and (x<44) or (x>47) and (x<52) or (x>55) and (x<60)then
+        temp = Quadrants(2)
+        Quadrants(2) = temp + CamArray1(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(2), " - ", dec CamArray1(x), 10
+        
+        temp = Quadrants(6)
+        Quadrants(6) = temp + CamArray2(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(6), " - ", dec CamArray2(x), 10
+        
+        temp = Quadrants(10)
+        Quadrants(10) = temp + CamArray3(x)
+       'debug dec x, " - ", dec temp, " - ", dec Quadrants(10), " - ", dec CamArray3(x), 10
+       
+        temp = Quadrants(14)
+        Quadrants(14) = temp + CamArray4(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(14), " - ", dec CamArray4(x), 10
+        
+        temp = Quadrants(18)
+        Quadrants(18) = temp + CamArray5(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(18), " - ", dec CamArray5(x), 10
+        
+        temp = Quadrants(22)
+        Quadrants(22) = temp + CamArray6(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(22), " - ", dec CamArray6(x), 10
+        
+        temp = Quadrants(26)
+        Quadrants(26) = temp + CamArray7(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(26), " - ", dec CamArray7(x), 10
+        
+        temp = Quadrants(30)
+        Quadrants(30) = temp + CamArray8(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(30), " - ", dec CamArray8(x), 10
+          
+        temp = Quadrants(34)
+        Quadrants(34) = temp + CamArray9(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(34), " - ", dec CamArray9(x), 10 
+        endif
+        
+       'Quadrant IV below
+    if (x>35) and (x<40) or (x>43) and (x<48) or (x>51) and (x<56) or (x>59) and (x<64)then
+        temp = Quadrants(3)
+        Quadrants(3) = temp + CamArray1(x)
+        debug dec x, " - ", dec temp, " - ", dec Quadrants(3), " - ", dec CamArray1(x), 10
+        
+        temp = Quadrants(7)
+        Quadrants(7) = temp + CamArray2(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(7), " - ", dec CamArray2(x), 10
+        
+        temp = Quadrants(11)
+        Quadrants(11) = temp + CamArray3(x)
+       'debug dec x, " - ", dec temp, " - ", dec Quadrants(11), " - ", dec CamArray3(x), 10
+       
+        temp = Quadrants(15)
+        Quadrants(15) = temp + CamArray4(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(15), " - ", dec CamArray4(x), 10
+        
+        temp = Quadrants(19)
+        Quadrants(19) = temp + CamArray5(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(19), " - ", dec CamArray5(x), 10
+        
+        temp = Quadrants(23)
+        Quadrants(23) = temp + CamArray6(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(23), " - ", dec CamArray6(x), 10
+        
+        temp = Quadrants(27)
+        Quadrants(27) = temp + CamArray7(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(27), " - ", dec CamArray7(x), 10
+        
+        temp = Quadrants(31)
+        Quadrants(31) = temp + CamArray8(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(31), " - ", dec CamArray8(x), 10  
+        
+        temp = Quadrants(35)
+        Quadrants(35) = temp + CamArray9(x)
+        'debug dec x, " - ", dec temp, " - ", dec Quadrants(35), " - ", dec CamArray9(x), 10 
+        endif
+    next x
+return  
+   
+   
+   
+   
+   
